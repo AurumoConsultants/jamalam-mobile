@@ -1,0 +1,23 @@
+# deps / build
+node_modules
+dist
+*.log
+
+# capacitor: web assets are copied in by `cap sync`
+android/app/src/main/assets/public
+android/app/src/main/assets/capacitor.config.json
+
+# android build outputs
+android/.gradle
+android/build
+android/app/build
+android/captures
+android/local.properties
+android/.idea
+*.keystore
+
+# env / os
+.env
+.env.*
+.DS_Store
+Thumbs.db
