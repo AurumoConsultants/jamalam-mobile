@@ -45,6 +45,7 @@ export default function App() {
   const trackIdsRef = useRef<string[]>([])
   const kitRef = useRef('808')
   const analysisRef = useRef<BeatboxResult | null>(null)
+  const peakRef = useRef(0) // loudest input this take — detects a silent/blocked mic
 
   useEffect(() => {
     return () => {
@@ -86,6 +87,7 @@ export default function App() {
   async function start() {
     setError(null)
     setResult(null)
+    peakRef.current = 0
     engine.ensureStarted().catch(() => {})
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -121,6 +123,7 @@ export default function App() {
             const abs = v < 0 ? -v : v
             if (abs > p) p = abs
           }
+          if (p > peakRef.current) peakRef.current = p
           setLevel(p)
         }
         rafRef.current = requestAnimationFrame(tick)
@@ -147,6 +150,12 @@ export default function App() {
       const ctx = ctxRef.current ?? new AudioContext()
       const audio = await ctx.decodeAudioData(await blob.arrayBuffer())
       streamRef.current?.getTracks().forEach((t) => t.stop())
+
+      if (peakRef.current < 0.012) {
+        setError('Mic captured silence — allow microphone access for Jamalam in your phone settings and try again.')
+        setPhase('idle')
+        return
+      }
 
       const analysis = analyzeBeatbox(audio)
       if (!analysis.hits.length) {
