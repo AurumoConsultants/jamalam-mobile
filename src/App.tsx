@@ -3,6 +3,8 @@ import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
 import { analyzeBeatbox, type Hit } from './audio/beatbox'
 import type { Track } from './types'
+import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
+import type { BundleInfo } from '@capgo/capacitor-updater'
 
 type Phase = 'idle' | 'recording' | 'analyzing' | 'ready'
 
@@ -28,6 +30,8 @@ export default function App() {
   const [kit, setKit] = useState('808')
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ bpm: number; counts: Record<string, number>; total: number } | null>(null)
+  const [updateBundle, setUpdateBundle] = useState<BundleInfo | null>(null)
+  const [applying, setApplying] = useState(false)
 
   const recRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -50,6 +54,24 @@ export default function App() {
       }
     }
   }, [])
+
+  // check GitHub for a newer web bundle on launch
+  useEffect(() => {
+    markLaunchOk()
+    checkForWebUpdate().then((r) => {
+      if (r) setUpdateBundle(r.bundle)
+    })
+  }, [])
+
+  async function applyWebUpdate() {
+    if (!updateBundle) return
+    setApplying(true)
+    try {
+      await applyUpdate(updateBundle)
+    } catch {
+      setApplying(false)
+    }
+  }
 
   async function start() {
     setError(null)
@@ -241,6 +263,12 @@ export default function App() {
           </select>
         </label>
       </footer>
+
+      {updateBundle && (
+        <button className="ota" onClick={applyWebUpdate} disabled={applying}>
+          {applying ? 'Updating…' : '✨ New version ready — tap to update'}
+        </button>
+      )}
     </div>
   )
 }

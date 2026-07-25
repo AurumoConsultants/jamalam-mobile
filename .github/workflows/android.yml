@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,8 +33,28 @@ jobs:
         run: npm ci
 
       - name: Build web bundle
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: npm run build
 
+      # --- OTA: publish the web bundle so installed apps can self-update ---
+      - name: Package OTA web bundle
+        run: |
+          cd dist && zip -r ../bundle-${{ github.run_number }}.zip . && cd ..
+          printf '{"build":%s,"url":"https://github.com/AurumoConsultants/jamalam-mobile/releases/download/ota/bundle-%s.zip"}\n' \
+            "${{ github.run_number }}" "${{ github.run_number }}" > latest.json
+          cat latest.json
+
+      - name: Publish OTA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ota --yes --cleanup-tag 2>/dev/null || true
+          gh release create ota "bundle-${{ github.run_number }}.zip" latest.json \
+            --title "OTA web bundle (build ${{ github.run_number }})" \
+            --notes "Automatic over-the-air web self-update bundle."
+
+      # --- Native APK (only needed when native code/permissions change) ---
       - name: Capacitor sync (copy web assets into android project)
         run: npx cap sync android
 

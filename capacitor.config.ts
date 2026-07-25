@@ -9,6 +9,12 @@ const config: CapacitorConfig = {
     // https://localhost, which qualifies.
     allowMixedContent: false,
   },
+  plugins: {
+    CapacitorUpdater: {
+      // we drive update checks manually (see src/updater.ts), not Capgo's cloud
+      autoUpdate: false,
+    },
+  },
 }
 
 export default config
