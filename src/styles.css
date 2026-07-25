@@ -177,6 +177,26 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+.result-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+.delete-take {
+  background: transparent;
+  color: #ef6461;
+  border: 1px solid #ef6461;
+  border-radius: 12px;
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.delete-take:active {
+  background: #ef6461;
+  color: #fff;
+}
 
 .error {
   color: var(--coral);

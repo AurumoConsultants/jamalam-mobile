@@ -228,6 +228,18 @@ export default function App() {
     setPlaying(true)
   }
 
+  // discard the current take: stop playback and remove its drum tracks
+  function discardTake() {
+    trackIdsRef.current.forEach((id) => engine.removeTrack(id))
+    trackIdsRef.current = []
+    engine.stop()
+    analysisRef.current = null
+    setResult(null)
+    setError(null)
+    setPlaying(false)
+    setPhase('idle')
+  }
+
   function changeKit(name: string) {
     setKit(name)
     kitRef.current = name
@@ -288,9 +300,14 @@ export default function App() {
                 2×
               </button>
             </div>
-            <button className="play" onClick={togglePlay}>
-              {playing ? '■ Stop' : '▶ Play'}
-            </button>
+            <div className="result-actions">
+              <button className="play" onClick={togglePlay}>
+                {playing ? '■ Stop' : '▶ Play'}
+              </button>
+              <button className="delete-take" onClick={discardTake} title="Delete this take">
+                🗑 Delete
+              </button>
+            </div>
           </div>
         )}
 
