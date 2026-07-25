@@ -177,10 +177,14 @@ export default function App() {
   }
 
   async function buildDrums(a: BeatboxResult) {
+    // start audio + finish the kit render BEFORE building any voice, so a
+    // Tone.Offline render never holds the audio context while a drum/synth
+    // voice is created (that makes voices land in a dead offline context).
+    await engine.ensureStarted()
     trackIdsRef.current.forEach((id) => engine.removeTrack(id))
     trackIdsRef.current = []
     engine.setTempo(a.bpm)
-    engine.setKit(kitRef.current)
+    await engine.setKit(kitRef.current)
     for (const [type, name] of DRUMS) {
       const group = a.hits.filter((h) => h.type === type)
       if (!group.length) continue
@@ -227,7 +231,7 @@ export default function App() {
   function changeKit(name: string) {
     setKit(name)
     kitRef.current = name
-    engine.setKit(name)
+    void engine.setKit(name)
   }
 
   const meterScale = 1 + Math.min(0.35, level * 0.9)

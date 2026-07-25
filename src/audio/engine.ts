@@ -66,9 +66,12 @@ class Engine {
     await kits.ensure(this.currentKit)
   }
 
-  setKit(name: string) {
+  // Await the kit render (Tone.Offline swaps the global audio context while it
+  // renders); building a voice during that window puts it in the throwaway
+  // offline context => silent. Callers await this before building voices.
+  async setKit(name: string) {
     this.currentKit = name
-    kits.ensure(name)
+    await kits.ensure(name)
   }
 
   private buildVoice(type: InstrumentType): Voice {
