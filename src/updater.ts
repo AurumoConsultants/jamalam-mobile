@@ -5,7 +5,7 @@
 // download the bundle. Applying it (reload) is left to the caller so the UI
 // can offer a "tap to update" instead of yanking the app out from under you.
 
-import { Capacitor } from '@capacitor/core'
+import { Capacitor, CapacitorHttp } from '@capacitor/core'
 import { CapacitorUpdater, type BundleInfo } from '@capgo/capacitor-updater'
 
 const MANIFEST_URL =
@@ -33,9 +33,18 @@ export async function markLaunchOk(): Promise<void> {
 export async function checkForWebUpdate(): Promise<{ bundle: BundleInfo; build: number } | null> {
   if (!Capacitor.isNativePlatform()) return null
   try {
-    const res = await fetch(`${MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' })
-    if (!res.ok) return null
-    const manifest = (await res.json()) as { build?: number | string; url?: string }
+    // Native HTTP (not fetch) — GitHub release-asset redirects have no CORS
+    // headers, so a WebView fetch would be blocked.
+    const res = await CapacitorHttp.get({
+      url: `${MANIFEST_URL}?t=${Date.now()}`,
+      headers: { 'Cache-Control': 'no-cache', Accept: 'application/json' },
+      responseType: 'text',
+    })
+    if (res.status < 200 || res.status >= 300) return null
+    const manifest = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data) as {
+      build?: number | string
+      url?: string
+    }
     const build = Number(manifest.build)
     if (!manifest.url || !Number.isFinite(build) || build <= currentBuild()) return null
 

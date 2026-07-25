@@ -32,6 +32,7 @@ export default function App() {
   const [result, setResult] = useState<{ bpm: number; counts: Record<string, number>; total: number } | null>(null)
   const [updateBundle, setUpdateBundle] = useState<BundleInfo | null>(null)
   const [applying, setApplying] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   const recRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -62,6 +63,14 @@ export default function App() {
       if (r) setUpdateBundle(r.bundle)
     })
   }, [])
+
+  async function manualCheck() {
+    if (checking) return
+    setChecking(true)
+    const r = await checkForWebUpdate()
+    setChecking(false)
+    if (r) setUpdateBundle(r.bundle)
+  }
 
   async function applyWebUpdate() {
     if (!updateBundle) return
@@ -261,7 +270,10 @@ export default function App() {
             ))}
           </select>
         </label>
-        <span className="build">build {__APP_BUILD__}</span>
+        <button className="build" onClick={manualCheck} title="Tap to check for updates">
+          build {__APP_BUILD__}
+          {checking ? ' · checking…' : ''}
+        </button>
       </footer>
 
       {updateBundle && (
