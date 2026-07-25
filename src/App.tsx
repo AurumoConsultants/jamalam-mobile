@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
-import { analyzeBeatbox, type Hit } from './audio/beatbox'
+import { analyzeBeatbox, type Hit, type BeatboxResult } from './audio/beatbox'
 import type { Track } from './types'
 import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
 import type { BundleInfo } from '@capgo/capacitor-updater'
@@ -138,16 +138,16 @@ export default function App() {
       const audio = await ctx.decodeAudioData(await blob.arrayBuffer())
       streamRef.current?.getTracks().forEach((t) => t.stop())
 
-      const { bpm, hits } = analyzeBeatbox(audio)
-      if (!hits.length) {
+      const analysis = analyzeBeatbox(audio)
+      if (!analysis.hits.length) {
         setError('No hits detected — beatbox a bit louder and closer to the mic.')
         setPhase('idle')
         return
       }
-      await buildDrums(bpm, hits)
+      await buildDrums(analysis)
       const counts: Record<string, number> = {}
-      for (const h of hits) counts[h.type] = (counts[h.type] || 0) + 1
-      setResult({ bpm, counts, total: hits.length })
+      for (const h of analysis.hits) counts[h.type] = (counts[h.type] || 0) + 1
+      setResult({ bpm: analysis.bpm, counts, total: analysis.hits.length })
       setPlaying(true)
       setPhase('ready')
     } catch (e: any) {
@@ -156,27 +156,26 @@ export default function App() {
     }
   }
 
-  async function buildDrums(bpm: number, hits: Hit[]) {
+  async function buildDrums(a: BeatboxResult) {
     trackIdsRef.current.forEach((id) => engine.removeTrack(id))
     trackIdsRef.current = []
-    engine.setTempo(bpm)
+    engine.setTempo(a.bpm)
     engine.setKit(kitRef.current)
-    const spb = bpm / 60
-    let maxBeat = 0
     for (const [type, name] of DRUMS) {
-      const group = hits.filter((h) => h.type === type)
+      const group = a.hits.filter((h) => h.type === type)
       if (!group.length) continue
-      const notes = group.map((h) => {
-        const start = Math.round(h.time * spb * 1000) / 1000
-        if (start > maxBeat) maxBeat = start
-        return { pitch: 'C2', start, duration: 0.25, velocity: Math.round(h.velocity * 100) / 100 }
-      })
+      const notes = group.map((h) => ({
+        pitch: 'C2',
+        start: h.beat,
+        duration: 0.25,
+        velocity: Math.round(h.velocity * 100) / 100,
+      }))
       const id = newId()
       const track: Track = { id, name, instrument: type, volume: -6, muted: false, notes }
       engine.addOrUpdateTrack(track)
       trackIdsRef.current.push(id)
     }
-    engine.setLoopBars(Math.max(1, Math.ceil((maxBeat + 0.5) / 4)))
+    engine.setLoopBars(a.bars)
     await engine.play()
   }
 

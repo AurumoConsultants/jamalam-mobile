@@ -1,17 +1,21 @@
-// Beatbox → drums (after-the-fact analysis). Pure DSP: onset detection via
-// spectral flux, per-hit spectral classification (kick/snare/hihat), and a
-// tempo estimate from the onset envelope. This is the seed of the shared core.
+// Beatbox → drums (after-the-fact analysis). Pure DSP:
+//   1. onset detection (spectral flux + peak-pick)
+//   2. an energy gate to drop weak/breath/noise onsets
+//   3. per-hit spectral classification (kick / snare / hihat)
+//   4. tempo estimate (weighted autocorrelation, biased to musical tempos)
+//   5. QUANTIZE each hit to a 16th-note grid + a clean whole-bar loop
+// This is the seed of the shared core.
 
 export type DrumType = 'kick' | 'snare' | 'hihat'
 export interface Hit {
-  time: number // seconds
+  beat: number // quantized start, in beats (4/4)
   type: DrumType
   velocity: number // 0..1
 }
 export interface BeatboxResult {
   bpm: number
+  bars: number
   hits: Hit[]
-  durationSec: number
 }
 
 function hann(n: number): Float32Array {
@@ -57,11 +61,8 @@ function fft(re: Float32Array, im: Float32Array): void {
 }
 
 function classify(centroid: number, lowFrac: number, midFrac: number, highFrac: number): DrumType {
-  // kick: energy concentrated low + dark timbre
   if (lowFrac > 0.12 && centroid < 1500) return 'kick'
-  // hihat: bright AND thin — lots of high energy, little low-mid body
   if (highFrac > 0.32 && midFrac < 0.18) return 'hihat'
-  // snare and everything else: has low-mid body (broadband)
   return 'snare'
 }
 
@@ -74,13 +75,13 @@ function peakPick(flux: Float32Array, frameSec: number): number[] {
   const norm = new Float32Array(n)
   for (let i = 0; i < n; i++) norm[i] = flux[i] / mx
 
-  const w = 8 // local-mean window
-  const minGap = Math.max(1, Math.round(0.07 / frameSec)) // 70 ms min between hits
-  const delta = 0.06
+  const w = 10 // local-mean window
+  const minGap = Math.max(1, Math.round(0.09 / frameSec)) // 90 ms min between hits
+  const delta = 0.08
   const out: number[] = []
   let last = -1e9
   for (let i = 1; i < n - 1; i++) {
-    if (norm[i] < norm[i - 1] || norm[i] < norm[i + 1]) continue // local max only
+    if (norm[i] < norm[i - 1] || norm[i] < norm[i + 1]) continue
     let sum = 0
     let cnt = 0
     for (let j = Math.max(0, i - w); j <= Math.min(n - 1, i + w); j++) {
@@ -88,7 +89,7 @@ function peakPick(flux: Float32Array, frameSec: number): number[] {
       cnt++
     }
     const thr = sum / cnt + delta
-    if (norm[i] >= thr && norm[i] > 0.1 && i - last >= minGap) {
+    if (norm[i] >= thr && norm[i] > 0.15 && i - last >= minGap) {
       out.push(i)
       last = i
     }
@@ -96,35 +97,45 @@ function peakPick(flux: Float32Array, frameSec: number): number[] {
   return out
 }
 
+// Tempo via autocorrelation of the onset envelope, weighted toward musical
+// tempos so it doesn't lock onto a half/double octave.
 function estimateTempo(flux: Float32Array, frameSec: number): number {
   const n = flux.length
-  if (n < 20) return 120
+  if (n < 20) return 100
   let mean = 0
   for (let i = 0; i < n; i++) mean += flux[i]
   mean /= n
   const env = new Float32Array(n)
   for (let i = 0; i < n; i++) env[i] = Math.max(0, flux[i] - mean)
 
-  const lagMin = Math.round(60 / 180 / frameSec) // 180 BPM
-  const lagMax = Math.round(60 / 70 / frameSec) // 70 BPM
+  const lagMin = Math.round(60 / 200 / frameSec) // 200 BPM
+  const lagMax = Math.round(60 / 60 / frameSec) // 60 BPM
   let bestLag = 0
-  let bestVal = 0
+  let bestScore = 0
   for (let lag = lagMin; lag <= lagMax && lag < n; lag++) {
     let s = 0
     for (let i = 0; i + lag < n; i++) s += env[i] * env[i + lag]
-    if (s > bestVal) {
-      bestVal = s
+    const bpm = 60 / (lag * frameSec)
+    // log-normal preference centred on ~105 BPM
+    const wt = Math.exp(-0.5 * Math.pow(Math.log(bpm / 105) / 0.4, 2))
+    const score = s * wt
+    if (score > bestScore) {
+      bestScore = score
       bestLag = lag
     }
   }
-  if (!bestLag) return 120
-  let bpm = 60 / (bestLag * frameSec)
-  while (bpm < 70) bpm *= 2
-  while (bpm > 180) bpm /= 2
-  return Math.round(bpm)
+  if (!bestLag) return 100
+  return Math.round(60 / (bestLag * frameSec))
 }
 
-/** Analyze a mono sample buffer. Exposed separately so it's testable without an AudioBuffer. */
+// nearest musical loop length (whole bars, power-of-two) that covers the phrase
+function chooseBars(lastBeat: number): number {
+  const need = lastBeat + 0.25
+  for (const b of [1, 2, 4, 8, 16]) if (b * 4 >= need) return b
+  return Math.ceil(need / 4)
+}
+
+/** Analyze a mono sample buffer. Testable without an AudioBuffer. */
 export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResult {
   const N = 1024
   const H = 256
@@ -178,13 +189,10 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
   }
 
   const frameSec = H / sampleRate
-  const onsets = peakPick(flux, frameSec)
-  const bpm = estimateTempo(flux, frameSec)
+  const onsetFrames = peakPick(flux, frameSec)
 
-  let maxLoud = 1e-9
-  for (const fi of onsets) if (loud[fi] > maxLoud) maxLoud = loud[fi]
-
-  const hits: Hit[] = onsets.map((fi) => {
+  // gather each onset's time, features and peak loudness
+  const raw = onsetFrames.map((fi) => {
     const a = fi
     const b = Math.min(nFrames - 1, fi + 3)
     let c = 0
@@ -201,18 +209,40 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
       if (loud[f] > pk) pk = loud[f]
       cnt++
     }
-    c /= cnt
-    lo /= cnt
-    md /= cnt
-    hi /= cnt
     return {
       time: fi * frameSec,
-      type: classify(c, lo, md, hi),
-      velocity: Math.max(0.35, Math.min(1, 0.4 + 0.6 * (pk / maxLoud))),
+      centroid: c / cnt,
+      lowFrac: lo / cnt,
+      midFrac: md / cnt,
+      highFrac: hi / cnt,
+      loud: pk,
     }
   })
 
-  return { bpm, hits, durationSec: x.length / sampleRate }
+  // energy gate: drop weak onsets (breath, room noise, mouth clicks)
+  let maxLoud = 1e-9
+  for (const o of raw) if (o.loud > maxLoud) maxLoud = o.loud
+  const gated = raw.filter((o) => o.loud >= 0.13 * maxLoud)
+  if (!gated.length) return { bpm: 100, bars: 1, hits: [] }
+
+  const bpm = estimateTempo(flux, frameSec)
+  const sixteenthSec = 60 / bpm / 4
+  const t0 = gated[0].time // anchor the grid to the first strong hit
+
+  // quantize + classify + de-duplicate (one hit per grid slot per drum, loudest wins)
+  const byKey = new Map<string, Hit>()
+  for (const o of gated) {
+    const beat = Math.max(0, Math.round((o.time - t0) / sixteenthSec) * 0.25)
+    const type = classify(o.centroid, o.lowFrac, o.midFrac, o.highFrac)
+    const velocity = Math.max(0.4, Math.min(1, 0.45 + 0.55 * (o.loud / maxLoud)))
+    const key = `${type}@${beat}`
+    const ex = byKey.get(key)
+    if (!ex || velocity > ex.velocity) byKey.set(key, { beat, type, velocity })
+  }
+
+  const hits = [...byKey.values()].sort((a, b) => a.beat - b.beat)
+  const lastBeat = hits.length ? hits[hits.length - 1].beat : 0
+  return { bpm, bars: chooseBars(lastBeat), hits }
 }
 
 export function analyzeBeatbox(buffer: AudioBuffer): BeatboxResult {
