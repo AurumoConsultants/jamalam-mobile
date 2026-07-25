@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
-import { analyzeBeatbox, type Hit, type BeatboxResult } from './audio/beatbox'
+import { analyzeBeatbox, requantize, type Hit, type BeatboxResult } from './audio/beatbox'
 import type { Track } from './types'
 import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
 import type { BundleInfo } from '@capgo/capacitor-updater'
@@ -44,6 +44,7 @@ export default function App() {
   const bufRef = useRef<Float32Array>(new Float32Array(2048))
   const trackIdsRef = useRef<string[]>([])
   const kitRef = useRef('808')
+  const analysisRef = useRef<BeatboxResult | null>(null)
 
   useEffect(() => {
     return () => {
@@ -153,6 +154,7 @@ export default function App() {
         setPhase('idle')
         return
       }
+      analysisRef.current = analysis
       await buildDrums(analysis)
       const counts: Record<string, number> = {}
       for (const h of analysis.hits) counts[h.type] = (counts[h.type] || 0) + 1
@@ -196,6 +198,21 @@ export default function App() {
       await engine.play()
       setPlaying(true)
     }
+  }
+
+  // re-quantize the same take at half / double tempo (fixes an octave-wrong grid)
+  async function adjustTempo(factor: number) {
+    const a = analysisRef.current
+    if (!a) return
+    const bpm = Math.max(50, Math.min(220, Math.round(a.bpm * factor)))
+    const rq = requantize(a.raw, bpm)
+    const next: BeatboxResult = { bpm, bars: rq.bars, hits: rq.hits, raw: a.raw }
+    analysisRef.current = next
+    await buildDrums(next)
+    const counts: Record<string, number> = {}
+    for (const h of rq.hits) counts[h.type] = (counts[h.type] || 0) + 1
+    setResult({ bpm, counts, total: rq.hits.length })
+    setPlaying(true)
   }
 
   function changeKit(name: string) {
@@ -249,7 +266,15 @@ export default function App() {
                 </span>
               ))}
             </div>
-            <div className="bpm">~{result.bpm} BPM</div>
+            <div className="tempo">
+              <button className="tempo-btn" onClick={() => adjustTempo(0.5)} title="Half tempo">
+                ½×
+              </button>
+              <span className="bpm">~{result.bpm} BPM</span>
+              <button className="tempo-btn" onClick={() => adjustTempo(2)} title="Double tempo">
+                2×
+              </button>
+            </div>
             <button className="play" onClick={togglePlay}>
               {playing ? '■ Stop' : '▶ Play'}
             </button>

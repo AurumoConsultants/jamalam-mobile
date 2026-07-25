@@ -145,10 +145,27 @@ body {
 .chip.hihat {
   color: var(--blue);
 }
+.tempo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tempo-btn {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
 .bpm {
   color: var(--muted);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
+  min-width: 84px;
+  text-align: center;
 }
 .play {
   background: var(--blue);

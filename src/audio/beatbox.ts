@@ -12,10 +12,16 @@ export interface Hit {
   type: DrumType
   velocity: number // 0..1
 }
+export interface RawHit {
+  time: number // seconds (un-quantized)
+  type: DrumType
+  velocity: number
+}
 export interface BeatboxResult {
   bpm: number
   bars: number
   hits: Hit[]
+  raw: RawHit[] // pre-quantization, so the tempo can be changed without re-recording
 }
 
 function hann(n: number): Float32Array {
@@ -61,9 +67,11 @@ function fft(re: Float32Array, im: Float32Array): void {
 }
 
 function classify(centroid: number, lowFrac: number, midFrac: number, highFrac: number): DrumType {
-  if (lowFrac > 0.12 && centroid < 1500) return 'kick'
-  if (highFrac > 0.32 && midFrac < 0.18) return 'hihat'
-  return 'snare'
+  // Phone mics roll off deep bass, so don't *require* sub-150Hz energy for a kick.
+  // Discriminate mainly by spectral centroid (brightness), which survives the roll-off.
+  if (centroid > 3600 && midFrac < 0.28 && highFrac > 0.2) return 'hihat' // bright + thin = ts/tss
+  if (centroid < 1200 || lowFrac > 0.1) return 'kick' // dark thump = b/p (even high-passed)
+  return 'snare' // broadband mid = k/psh
 }
 
 function peakPick(flux: Float32Array, frameSec: number): number[] {
@@ -223,26 +231,34 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
   let maxLoud = 1e-9
   for (const o of raw) if (o.loud > maxLoud) maxLoud = o.loud
   const gated = raw.filter((o) => o.loud >= 0.13 * maxLoud)
-  if (!gated.length) return { bpm: 100, bars: 1, hits: [] }
+  if (!gated.length) return { bpm: 100, bars: 1, hits: [], raw: [] }
 
   const bpm = estimateTempo(flux, frameSec)
+  const classified: RawHit[] = gated.map((o) => ({
+    time: o.time,
+    type: classify(o.centroid, o.lowFrac, o.midFrac, o.highFrac),
+    velocity: Math.max(0.4, Math.min(1, 0.45 + 0.55 * (o.loud / maxLoud))),
+  }))
+
+  const { bars, hits } = requantize(classified, bpm)
+  return { bpm, bars, hits, raw: classified }
+}
+
+/** Snap already-classified onsets to a 16th grid at a given tempo (used for ½×/2× tempo nudges). */
+export function requantize(raw: RawHit[], bpm: number): { bars: number; hits: Hit[] } {
+  if (!raw.length) return { bars: 1, hits: [] }
   const sixteenthSec = 60 / bpm / 4
-  const t0 = gated[0].time // anchor the grid to the first strong hit
-
-  // quantize + classify + de-duplicate (one hit per grid slot per drum, loudest wins)
+  const t0 = raw[0].time // anchor the grid to the first hit
   const byKey = new Map<string, Hit>()
-  for (const o of gated) {
+  for (const o of raw) {
     const beat = Math.max(0, Math.round((o.time - t0) / sixteenthSec) * 0.25)
-    const type = classify(o.centroid, o.lowFrac, o.midFrac, o.highFrac)
-    const velocity = Math.max(0.4, Math.min(1, 0.45 + 0.55 * (o.loud / maxLoud)))
-    const key = `${type}@${beat}`
+    const key = `${o.type}@${beat}`
     const ex = byKey.get(key)
-    if (!ex || velocity > ex.velocity) byKey.set(key, { beat, type, velocity })
+    if (!ex || o.velocity > ex.velocity) byKey.set(key, { beat, type: o.type, velocity: o.velocity })
   }
-
   const hits = [...byKey.values()].sort((a, b) => a.beat - b.beat)
   const lastBeat = hits.length ? hits[hits.length - 1].beat : 0
-  return { bpm, bars: chooseBars(lastBeat), hits }
+  return { bars: chooseBars(lastBeat), hits }
 }
 
 export function analyzeBeatbox(buffer: AudioBuffer): BeatboxResult {
