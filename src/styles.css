@@ -148,6 +148,57 @@ body {
 .chip.openhat {
   color: var(--teal);
 }
+/* committed parts (layers) — a light, simple track list */
+.layers {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.layer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px 6px 4px 4px;
+}
+.layer.muted {
+  opacity: 0.45;
+}
+.layer-name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 6px;
+}
+.layer-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 15px;
+  padding: 8px 10px;
+}
+.keep {
+  background: var(--teal);
+  color: #06231b;
+  border: none;
+  border-radius: 12px;
+  padding: 14px 22px;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.play.wide {
+  padding: 12px 40px;
+}
 /* footer calibrate button */
 .calib-btn {
   background: none;

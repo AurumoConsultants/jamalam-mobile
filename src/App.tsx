@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
-import { analyzeBeatbox, requantize, type Hit, type BeatboxResult, type DrumProfile } from './audio/beatbox'
+import { analyzeBeatbox, requantize, type Hit, type BeatboxResult } from './audio/beatbox'
 import { loadProfile } from './audio/profile'
 import Calibrate from './Calibrate'
+import type { DrumProfile } from './audio/beatbox'
 import type { Track } from './types'
 import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
 import type { BundleInfo } from '@capgo/capacitor-updater'
@@ -16,6 +17,15 @@ const DRUMS: Array<[Hit['type'], string]> = [
   ['hihat', 'Hihat'],
   ['openhat', 'Open Hat'],
 ]
+const LABELS: Record<string, string> = { kick: 'Kick', snare: 'Snare', hihat: 'Hi-hat', openhat: 'Open hat' }
+
+// a committed part = its own drum track(s) that keep looping
+interface Layer {
+  id: string
+  name: string
+  trackIds: string[]
+  muted: boolean
+}
 
 let idc = 0
 const newId = () => `t${Date.now().toString(36)}${idc++}`
@@ -33,11 +43,12 @@ export default function App() {
   const [kit, setKit] = useState('808')
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ bpm: number; counts: Record<string, number>; total: number } | null>(null)
+  const [layers, setLayers] = useState<Layer[]>([])
   const [updateBundle, setUpdateBundle] = useState<BundleInfo | null>(null)
   const [applying, setApplying] = useState(false)
   const [checking, setChecking] = useState(false)
-  const [profile, setProfile] = useState<DrumProfile>({})
   const [showCalib, setShowCalib] = useState(false)
+  const [profile, setProfile] = useState<DrumProfile>({})
 
   const recRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -47,10 +58,12 @@ export default function App() {
   const startRef = useRef(0)
   const rafRef = useRef(0)
   const bufRef = useRef<Float32Array>(new Float32Array(2048))
-  const trackIdsRef = useRef<string[]>([])
+  const previewIdsRef = useRef<string[]>([]) // the un-committed take's tracks
   const kitRef = useRef('808')
   const analysisRef = useRef<BeatboxResult | null>(null)
-  const peakRef = useRef(0) // loudest input this take — detects a silent/blocked mic
+  const peakRef = useRef(0)
+  const sessionBpmRef = useRef<number | null>(null) // locked once the first part is kept
+  const sessionBarsRef = useRef<number | null>(null)
 
   useEffect(() => {
     return () => {
@@ -65,7 +78,6 @@ export default function App() {
 
   useEffect(() => setProfile(loadProfile()), [])
 
-  // check GitHub for a newer web bundle on launch
   useEffect(() => {
     markLaunchOk()
     checkForWebUpdate().then((r) => {
@@ -97,8 +109,11 @@ export default function App() {
     peakRef.current = 0
     engine.ensureStarted().catch(() => {})
     try {
+      // when overdubbing (a loop is already playing), turn on echo cancellation
+      // to keep the looping speaker sound out of the new recording
+      const overdub = layers.length > 0
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        audio: { echoCancellation: overdub, noiseSuppression: false, autoGainControl: false },
       })
       streamRef.current = stream
       const ctx = new AudioContext()
@@ -171,10 +186,10 @@ export default function App() {
         return
       }
       analysisRef.current = analysis
-      await buildDrums(analysis)
+      const built = await buildPreview(analysis)
       const counts: Record<string, number> = {}
-      for (const h of analysis.hits) counts[h.type] = (counts[h.type] || 0) + 1
-      setResult({ bpm: analysis.bpm, counts, total: analysis.hits.length })
+      for (const h of built.hits) counts[h.type] = (counts[h.type] || 0) + 1
+      setResult({ bpm: built.bpm, counts, total: built.hits.length })
       setPlaying(true)
       setPhase('ready')
     } catch (e: any) {
@@ -183,17 +198,23 @@ export default function App() {
     }
   }
 
-  async function buildDrums(a: BeatboxResult) {
-    // start audio + finish the kit render BEFORE building any voice, so a
-    // Tone.Offline render never holds the audio context while a drum/synth
-    // voice is created (that makes voices land in a dead offline context).
+  // Build the current (un-committed) take's drums. If a session tempo is already
+  // locked (a part was kept), snap this take to it so the parts line up.
+  async function buildPreview(a: BeatboxResult): Promise<{ bpm: number; bars: number; hits: Hit[] }> {
     await engine.ensureStarted()
-    trackIdsRef.current.forEach((id) => engine.removeTrack(id))
-    trackIdsRef.current = []
-    engine.setTempo(a.bpm)
+    previewIdsRef.current.forEach((id) => engine.removeTrack(id))
+    previewIdsRef.current = []
+
+    const locked = sessionBpmRef.current != null
+    const bpm = locked ? (sessionBpmRef.current as number) : a.bpm
+    const bars = locked ? (sessionBarsRef.current as number) : a.bars
+    const hits = locked ? requantize(a.raw, bpm).hits : a.hits
+
+    engine.setTempo(bpm)
     await engine.setKit(kitRef.current)
+    const ids: string[] = []
     for (const [type, name] of DRUMS) {
-      const group = a.hits.filter((h) => h.type === type)
+      const group = hits.filter((h) => h.type === type)
       if (!group.length) continue
       const notes = group.map((h) => ({
         pitch: 'C2',
@@ -204,10 +225,70 @@ export default function App() {
       const id = newId()
       const track: Track = { id, name, instrument: type, volume: -6, muted: false, notes }
       engine.addOrUpdateTrack(track)
-      trackIdsRef.current.push(id)
+      ids.push(id)
     }
-    engine.setLoopBars(a.bars)
+    previewIdsRef.current = ids
+    engine.setLoopBars(bars)
     await engine.play()
+    return { bpm, bars, hits }
+  }
+
+  // Commit the current take as its own looping track (part).
+  function keepAsTrack() {
+    if (!previewIdsRef.current.length || !analysisRef.current) return
+    if (sessionBpmRef.current == null) {
+      sessionBpmRef.current = result?.bpm ?? analysisRef.current.bpm
+      sessionBarsRef.current = analysisRef.current.bars
+    }
+    const types = result ? Object.keys(result.counts) : []
+    const name = types.map((t) => LABELS[t] || t).join(' + ') || 'Part'
+    const layer: Layer = { id: `L${Date.now().toString(36)}`, name, trackIds: previewIdsRef.current.slice(), muted: false }
+    setLayers((ls) => [...ls, layer])
+    previewIdsRef.current = [] // now committed — the next take won't remove it
+    analysisRef.current = null
+    setResult(null)
+    setPhase('idle')
+  }
+
+  // Discard the current take (keeps any committed parts looping).
+  function discardTake() {
+    previewIdsRef.current.forEach((id) => engine.removeTrack(id))
+    previewIdsRef.current = []
+    analysisRef.current = null
+    setResult(null)
+    setError(null)
+    setPhase('idle')
+    if (layers.length === 0) {
+      engine.stop()
+      setPlaying(false)
+      sessionBpmRef.current = null
+      sessionBarsRef.current = null
+    }
+  }
+
+  function removeLayer(id: string) {
+    const layer = layers.find((l) => l.id === id)
+    if (!layer) return
+    layer.trackIds.forEach((tid) => engine.removeTrack(tid))
+    const rest = layers.filter((l) => l.id !== id)
+    setLayers(rest)
+    if (rest.length === 0 && previewIdsRef.current.length === 0) {
+      engine.stop()
+      setPlaying(false)
+      sessionBpmRef.current = null
+      sessionBarsRef.current = null
+    }
+  }
+
+  function toggleMute(id: string) {
+    setLayers((ls) =>
+      ls.map((l) => {
+        if (l.id !== id) return l
+        const muted = !l.muted
+        l.trackIds.forEach((tid) => engine.setMute(tid, muted))
+        return { ...l, muted }
+      }),
+    )
   }
 
   async function togglePlay() {
@@ -220,31 +301,19 @@ export default function App() {
     }
   }
 
-  // re-quantize the same take at half / double tempo (fixes an octave-wrong grid)
+  // ½× / 2× only matters before the session tempo is locked (first part)
   async function adjustTempo(factor: number) {
     const a = analysisRef.current
-    if (!a) return
+    if (!a || sessionBpmRef.current != null) return
     const bpm = Math.max(50, Math.min(220, Math.round(a.bpm * factor)))
     const rq = requantize(a.raw, bpm)
     const next: BeatboxResult = { bpm, bars: rq.bars, hits: rq.hits, raw: a.raw }
     analysisRef.current = next
-    await buildDrums(next)
+    const built = await buildPreview(next)
     const counts: Record<string, number> = {}
-    for (const h of rq.hits) counts[h.type] = (counts[h.type] || 0) + 1
-    setResult({ bpm, counts, total: rq.hits.length })
+    for (const h of built.hits) counts[h.type] = (counts[h.type] || 0) + 1
+    setResult({ bpm: built.bpm, counts, total: built.hits.length })
     setPlaying(true)
-  }
-
-  // discard the current take: stop playback and remove its drum tracks
-  function discardTake() {
-    trackIdsRef.current.forEach((id) => engine.removeTrack(id))
-    trackIdsRef.current = []
-    engine.stop()
-    analysisRef.current = null
-    setResult(null)
-    setError(null)
-    setPlaying(false)
-    setPhase('idle')
   }
 
   function changeKit(name: string) {
@@ -257,6 +326,18 @@ export default function App() {
   const recording = phase === 'recording'
   const analyzing = phase === 'analyzing'
   const calibrated = Object.keys(profile).length >= 2
+  const hasLayers = layers.length > 0
+  const locked = sessionBpmRef.current != null
+
+  const hint = recording
+    ? 'Listening… beatbox your part'
+    : analyzing
+      ? 'Finding the hits…'
+      : result
+        ? 'Nice — keep it as a track, or delete and retry.'
+        : hasLayers
+          ? 'Loop is playing — beatbox another part to stack it on top.'
+          : 'Tap and beatbox — kick, snare, hats. Jamalam turns it into drums.'
 
   return (
     <div className="screen">
@@ -268,15 +349,22 @@ export default function App() {
       </header>
 
       <main className="stage">
-        <p className="hint">
-          {recording
-            ? 'Listening… beatbox your groove'
-            : analyzing
-              ? 'Finding the hits…'
-              : result
-                ? 'Your beatbox, played by a real kit.'
-                : 'Tap and beatbox — kicks, snares, hats. Jamalam turns it into drums.'}
-        </p>
+        {hasLayers && (
+          <div className="layers">
+            {layers.map((l) => (
+              <div key={l.id} className={`layer ${l.muted ? 'muted' : ''}`}>
+                <button className="layer-name" onClick={() => toggleMute(l.id)}>
+                  {l.muted ? '🔇' : '🔊'} {l.name}
+                </button>
+                <button className="layer-x" onClick={() => removeLayer(l.id)} aria-label="remove">
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="hint">{hint}</p>
 
         <button
           className={`orb ${recording ? 'rec' : ''} ${analyzing ? 'busy' : ''}`}
@@ -286,7 +374,7 @@ export default function App() {
         >
           {recording ? '■' : analyzing ? '…' : '●'}
           <span className="orb-label">
-            {recording ? fmt(elapsed) : analyzing ? 'converting' : result ? 'again' : 'beatbox'}
+            {recording ? fmt(elapsed) : analyzing ? 'converting' : result ? 'again' : hasLayers ? 'add part' : 'beatbox'}
           </span>
         </button>
 
@@ -299,24 +387,35 @@ export default function App() {
                 </span>
               ))}
             </div>
-            <div className="tempo">
-              <button className="tempo-btn" onClick={() => adjustTempo(0.5)} title="Half tempo">
-                ½×
-              </button>
-              <span className="bpm">~{result.bpm} BPM</span>
-              <button className="tempo-btn" onClick={() => adjustTempo(2)} title="Double tempo">
-                2×
-              </button>
-            </div>
+            {!locked && (
+              <div className="tempo">
+                <button className="tempo-btn" onClick={() => adjustTempo(0.5)} title="Half tempo">
+                  ½×
+                </button>
+                <span className="bpm">~{result.bpm} BPM</span>
+                <button className="tempo-btn" onClick={() => adjustTempo(2)} title="Double tempo">
+                  2×
+                </button>
+              </div>
+            )}
             <div className="result-actions">
+              <button className="keep" onClick={keepAsTrack}>
+                ＋ Keep as track
+              </button>
               <button className="play" onClick={togglePlay}>
-                {playing ? '■ Stop' : '▶ Play'}
+                {playing ? '■' : '▶'}
               </button>
               <button className="delete-take" onClick={discardTake} title="Delete this take">
-                🗑 Delete
+                🗑
               </button>
             </div>
           </div>
+        )}
+
+        {hasLayers && phase === 'idle' && (
+          <button className="play wide" onClick={togglePlay}>
+            {playing ? '■ Stop loop' : '▶ Play loop'}
+          </button>
         )}
 
         {error && <div className="error">{error}</div>}
@@ -348,12 +447,7 @@ export default function App() {
         </button>
       )}
 
-      <Calibrate
-        open={showCalib}
-        initial={profile}
-        onClose={() => setShowCalib(false)}
-        onSaved={setProfile}
-      />
+      <Calibrate open={showCalib} initial={profile} onClose={() => setShowCalib(false)} onSaved={setProfile} />
     </div>
   )
 }
