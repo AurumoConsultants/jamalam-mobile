@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
-import { analyzeBeatbox, requantize, type Hit, type BeatboxResult } from './audio/beatbox'
+import { analyzeBeatbox, requantize, type Hit, type BeatboxResult, type DrumProfile } from './audio/beatbox'
+import { loadProfile } from './audio/profile'
+import Calibrate from './Calibrate'
 import type { Track } from './types'
 import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
 import type { BundleInfo } from '@capgo/capacitor-updater'
@@ -12,6 +14,7 @@ const DRUMS: Array<[Hit['type'], string]> = [
   ['kick', 'Kick'],
   ['snare', 'Snare'],
   ['hihat', 'Hihat'],
+  ['openhat', 'Open Hat'],
 ]
 
 let idc = 0
@@ -33,6 +36,8 @@ export default function App() {
   const [updateBundle, setUpdateBundle] = useState<BundleInfo | null>(null)
   const [applying, setApplying] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [profile, setProfile] = useState<DrumProfile>({})
+  const [showCalib, setShowCalib] = useState(false)
 
   const recRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -57,6 +62,8 @@ export default function App() {
       }
     }
   }, [])
+
+  useEffect(() => setProfile(loadProfile()), [])
 
   // check GitHub for a newer web bundle on launch
   useEffect(() => {
@@ -157,7 +164,7 @@ export default function App() {
         return
       }
 
-      const analysis = analyzeBeatbox(audio)
+      const analysis = analyzeBeatbox(audio, loadProfile())
       if (!analysis.hits.length) {
         setError('No hits detected — beatbox a bit louder and closer to the mic.')
         setPhase('idle')
@@ -249,6 +256,7 @@ export default function App() {
   const meterScale = 1 + Math.min(0.35, level * 0.9)
   const recording = phase === 'recording'
   const analyzing = phase === 'analyzing'
+  const calibrated = Object.keys(profile).length >= 2
 
   return (
     <div className="screen">
@@ -325,6 +333,9 @@ export default function App() {
             ))}
           </select>
         </label>
+        <button className={`calib-btn ${calibrated ? 'on' : ''}`} onClick={() => setShowCalib(true)}>
+          {calibrated ? '🎚 Tuned ✓' : '🎚 Calibrate'}
+        </button>
         <button className="build" onClick={manualCheck} title="Tap to check for updates">
           build {__APP_BUILD__}
           {checking ? ' · checking…' : ''}
@@ -336,6 +347,13 @@ export default function App() {
           {applying ? 'Updating…' : '✨ New version ready — tap to update'}
         </button>
       )}
+
+      <Calibrate
+        open={showCalib}
+        initial={profile}
+        onClose={() => setShowCalib(false)}
+        onSaved={setProfile}
+      />
     </div>
   )
 }

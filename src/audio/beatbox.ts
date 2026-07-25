@@ -6,7 +6,7 @@
 //   5. QUANTIZE each hit to a 16th-note grid + a clean whole-bar loop
 // This is the seed of the shared core.
 
-export type DrumType = 'kick' | 'snare' | 'hihat'
+export type DrumType = 'kick' | 'snare' | 'hihat' | 'openhat'
 export interface Hit {
   beat: number // quantized start, in beats (4/4)
   type: DrumType
@@ -23,6 +23,18 @@ export interface BeatboxResult {
   hits: Hit[]
   raw: RawHit[] // pre-quantization, so the tempo can be changed without re-recording
 }
+
+// A per-sound spectral fingerprint. The calibration wizard records the user
+// making each drum sound and stores the averaged fingerprint; analysis then
+// classifies each onset by nearest fingerprint instead of fixed thresholds.
+export interface FeatureVec {
+  centroid: number // spectral centroid (Hz) — brightness
+  lowFrac: number // fraction of energy < 150 Hz
+  midFrac: number // fraction 150–2000 Hz
+  highFrac: number // fraction > 6000 Hz
+  decay: number // seconds the hit stays loud — separates closed vs open hats
+}
+export type DrumProfile = Partial<Record<DrumType, FeatureVec>>
 
 function hann(n: number): Float32Array {
   const w = new Float32Array(n)
@@ -143,8 +155,16 @@ function chooseBars(lastBeat: number): number {
   return Math.ceil(need / 4)
 }
 
-/** Analyze a mono sample buffer. Testable without an AudioBuffer. */
-export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResult {
+interface OnsetFeat extends FeatureVec {
+  time: number
+  loud: number
+}
+
+/** FFT frames -> peak-picked, energy-gated onsets with a spectral fingerprint each. */
+function detectOnsets(
+  x: Float32Array,
+  sampleRate: number,
+): { onsets: OnsetFeat[]; flux: Float32Array; frameSec: number } {
   const N = 1024
   const H = 256
   const half = N >> 1
@@ -199,8 +219,7 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
   const frameSec = H / sampleRate
   const onsetFrames = peakPick(flux, frameSec)
 
-  // gather each onset's time, features and peak loudness
-  const raw = onsetFrames.map((fi) => {
+  const raw: OnsetFeat[] = onsetFrames.map((fi) => {
     const a = fi
     const b = Math.min(nFrames - 1, fi + 3)
     let c = 0
@@ -217,12 +236,20 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
       if (loud[f] > pk) pk = loud[f]
       cnt++
     }
+    // decay: how long (s) the hit stays above 30% of its peak — open hats ring longer
+    let decayFrames = 0
+    const maxWin = Math.min(nFrames, fi + 120)
+    for (let f = fi; f < maxWin; f++) {
+      if (loud[f] >= 0.3 * pk) decayFrames = f - fi
+      else if (f - fi > 2) break
+    }
     return {
       time: fi * frameSec,
       centroid: c / cnt,
       lowFrac: lo / cnt,
       midFrac: md / cnt,
       highFrac: hi / cnt,
+      decay: decayFrames * frameSec,
       loud: pk,
     }
   })
@@ -230,18 +257,85 @@ export function analyzeSamples(x: Float32Array, sampleRate: number): BeatboxResu
   // energy gate: drop weak onsets (breath, room noise, mouth clicks)
   let maxLoud = 1e-9
   for (const o of raw) if (o.loud > maxLoud) maxLoud = o.loud
-  const gated = raw.filter((o) => o.loud >= 0.13 * maxLoud)
-  if (!gated.length) return { bpm: 100, bars: 1, hits: [], raw: [] }
+  const onsets = raw.filter((o) => o.loud >= 0.13 * maxLoud)
+  return { onsets, flux, frameSec }
+}
 
+// weighted distance between fingerprints (centroid in Hz is scaled down; decay
+// and the energy fractions are already 0..1-ish and weighted up)
+function featureDist(a: FeatureVec, b: FeatureVec): number {
+  const dc = (a.centroid - b.centroid) / 3000
+  const dl = (a.lowFrac - b.lowFrac) * 3
+  const dm = (a.midFrac - b.midFrac) * 2
+  const dh = (a.highFrac - b.highFrac) * 3
+  const dd = (a.decay - b.decay) * 8
+  return dc * dc + dl * dl + dm * dm + dh * dh + dd * dd
+}
+
+export function profileTypeCount(p: DrumProfile | undefined): number {
+  return p ? Object.keys(p).length : 0
+}
+
+/** Classify one onset by nearest calibrated fingerprint. */
+export function classifyWithProfile(f: FeatureVec, profile: DrumProfile): DrumType {
+  let best: DrumType | null = null
+  let bestD = Infinity
+  for (const t of Object.keys(profile) as DrumType[]) {
+    const p = profile[t]
+    if (!p) continue
+    const d = featureDist(f, p)
+    if (d < bestD) {
+      bestD = d
+      best = t
+    }
+  }
+  return best ?? 'snare'
+}
+
+/**
+ * Analyze a mono sample buffer. Testable without an AudioBuffer.
+ * Pass a calibrated `profile` (>=2 sounds) to classify by the user's own
+ * fingerprints; otherwise it falls back to the generic heuristic.
+ */
+export function analyzeSamples(x: Float32Array, sampleRate: number, profile?: DrumProfile): BeatboxResult {
+  const { onsets, flux, frameSec } = detectOnsets(x, sampleRate)
+  if (!onsets.length) return { bpm: 100, bars: 1, hits: [], raw: [] }
+
+  let maxLoud = 1e-9
+  for (const o of onsets) if (o.loud > maxLoud) maxLoud = o.loud
+
+  const useProfile = profileTypeCount(profile) >= 2
   const bpm = estimateTempo(flux, frameSec)
-  const classified: RawHit[] = gated.map((o) => ({
+  const classified: RawHit[] = onsets.map((o) => ({
     time: o.time,
-    type: classify(o.centroid, o.lowFrac, o.midFrac, o.highFrac),
+    type: useProfile
+      ? classifyWithProfile(o, profile as DrumProfile)
+      : classify(o.centroid, o.lowFrac, o.midFrac, o.highFrac),
     velocity: Math.max(0.4, Math.min(1, 0.45 + 0.55 * (o.loud / maxLoud))),
   }))
 
   const { bars, hits } = requantize(classified, bpm)
   return { bpm, bars, hits, raw: classified }
+}
+
+/** Average the loudest onsets of a single-sound recording into one fingerprint (for calibration). */
+export function profileFromSamples(x: Float32Array, sampleRate: number): FeatureVec | null {
+  const { onsets } = detectOnsets(x, sampleRate)
+  if (!onsets.length) return null
+  const top = [...onsets].sort((a, b) => b.loud - a.loud).slice(0, 8)
+  const n = top.length
+  const avg = (sel: (o: OnsetFeat) => number) => top.reduce((s, o) => s + sel(o), 0) / n
+  return {
+    centroid: avg((o) => o.centroid),
+    lowFrac: avg((o) => o.lowFrac),
+    midFrac: avg((o) => o.midFrac),
+    highFrac: avg((o) => o.highFrac),
+    decay: avg((o) => o.decay),
+  }
+}
+
+export function profileFromBuffer(buffer: AudioBuffer): FeatureVec | null {
+  return profileFromSamples(buffer.getChannelData(0), buffer.sampleRate)
 }
 
 /** Snap already-classified onsets to a 16th grid at a given tempo (used for ½×/2× tempo nudges). */
@@ -261,6 +355,6 @@ export function requantize(raw: RawHit[], bpm: number): { bars: number; hits: Hi
   return { bars: chooseBars(lastBeat), hits }
 }
 
-export function analyzeBeatbox(buffer: AudioBuffer): BeatboxResult {
-  return analyzeSamples(buffer.getChannelData(0), buffer.sampleRate)
+export function analyzeBeatbox(buffer: AudioBuffer, profile?: DrumProfile): BeatboxResult {
+  return analyzeSamples(buffer.getChannelData(0), buffer.sampleRate, profile)
 }

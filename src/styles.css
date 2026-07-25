@@ -145,6 +145,116 @@ body {
 .chip.hihat {
   color: var(--blue);
 }
+.chip.openhat {
+  color: var(--teal);
+}
+/* footer calibrate button */
+.calib-btn {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.calib-btn.on {
+  color: var(--teal);
+  border-color: var(--teal);
+}
+/* full-screen calibration overlay */
+.calib-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  padding: calc(14px + env(safe-area-inset-top)) 20px calc(18px + env(safe-area-inset-bottom));
+}
+.calib-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.calib-x {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 16px;
+}
+.calib-progress {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  justify-content: center;
+}
+.cdot {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+.cdot.cur {
+  border-color: var(--blue);
+  color: var(--text);
+}
+.cdot.ok {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #06231b;
+}
+.calib-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+.calib-title {
+  font-size: 22px;
+  font-weight: 800;
+}
+.calib-cue {
+  color: var(--muted);
+  font-size: 14px;
+  max-width: 280px;
+}
+.calib-say {
+  font-size: 26px;
+  letter-spacing: 2px;
+  color: var(--blue);
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.orb.calib {
+  width: 170px;
+  height: 170px;
+  color: #04121f;
+  background: radial-gradient(circle at 50% 35%, #9ccdf5, var(--blue) 60%, #3f7fb8);
+  box-shadow:
+    0 0 0 10px rgba(90, 169, 230, 0.14),
+    0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.calib-actions {
+  display: flex;
+  justify-content: center;
+}
+.calib-count {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 10px;
+}
 .tempo {
   display: flex;
   align-items: center;
