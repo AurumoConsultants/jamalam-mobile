@@ -250,10 +250,22 @@ body {
   justify-content: center;
 }
 .calib-count {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
   color: var(--muted);
   font-size: 12px;
   margin-top: 10px;
+}
+.calib-reset {
+  background: none;
+  border: 1px solid var(--coral);
+  color: var(--coral);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
 }
 .tempo {
   display: flex;

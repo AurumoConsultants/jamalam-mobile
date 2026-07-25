@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { profileFromBuffer, type DrumProfile, type DrumType } from './audio/beatbox'
-import { saveProfile } from './audio/profile'
+import { saveProfile, clearProfile } from './audio/profile'
 
 const STEPS: { type: DrumType; title: string; cue: string; say: string }[] = [
   { type: 'kick', title: 'Kick / Bass drum', cue: 'Deep chest "b" — like "boom"', say: 'b · b · b · b' },
@@ -148,6 +148,16 @@ export default function Calibrate({
     onClose()
   }
 
+  // wipe the whole profile and start from scratch (back to generic detection)
+  function reset() {
+    clearProfile()
+    profileRef.current = {}
+    setCaptured({})
+    setStep(0)
+    setError(null)
+    onSaved({})
+  }
+
   if (!open) return null
   const s = STEPS[step]
   const done = !!captured[s.type]
@@ -203,7 +213,14 @@ export default function Calibrate({
           </button>
         )}
       </div>
-      <div className="calib-count">{capturedCount}/{STEPS.length} sounds captured</div>
+      <div className="calib-count">
+        {capturedCount}/{STEPS.length} sounds captured
+        {capturedCount > 0 && (
+          <button className="calib-reset" onClick={reset} disabled={recording}>
+            ↺ Start over
+          </button>
+        )}
+      </div>
     </div>
   )
 }
