@@ -100,15 +100,15 @@ function renderPiece(p: KitParams, piece: DrumPiece) {
     case 'hihat':
     case 'openhat': {
       const decay = piece === 'hihat' ? p.hatDecay : p.openDecay
-      const m = new Tone.MetalSynth({
-        frequency: p.hatFreq,
-        envelope: { attack: 0.001, decay, release: 0.02 },
-        harmonicity: 5.1,
-        modulationIndex: 32,
-        resonance: 4000,
-        octaves: 1.5,
-      } as any).connect(out)
-      m.triggerAttackRelease(decay, 0)
+      // Tone.MetalSynth renders SILENT inside Tone.Offline on this version, so
+      // build hats from highpass-filtered white noise (reliable offline, and the
+      // classic drum-machine hi-hat). Brightness scales with the kit's hatFreq.
+      const hp = new Tone.Filter(Math.min(9000, Math.max(5000, p.hatFreq * 15)), 'highpass').connect(out)
+      const n = new Tone.NoiseSynth({
+        noise: { type: 'white' },
+        envelope: { attack: 0.001, decay, sustain: 0, release: 0.02 },
+      }).connect(hp)
+      n.triggerAttackRelease(decay, 0)
       break
     }
     case 'clap': {
@@ -131,15 +131,14 @@ function renderPiece(p: KitParams, piece: DrumPiece) {
       break
     }
     case 'rim': {
-      const m = new Tone.MetalSynth({
-        frequency: 800,
-        envelope: { attack: 0.001, decay: 0.05, release: 0.01 },
-        harmonicity: 12,
-        modulationIndex: 20,
-        resonance: 3000,
-        octaves: 1,
-      } as any).connect(out)
-      m.triggerAttackRelease(0.05, 0)
+      // was MetalSynth (silent offline) -> short band-passed noise click
+      const bp = new Tone.Filter(1700, 'bandpass').connect(out)
+      bp.Q.value = 3
+      const n = new Tone.NoiseSynth({
+        noise: { type: 'white' },
+        envelope: { attack: 0.001, decay: 0.03, sustain: 0, release: 0.01 },
+      }).connect(bp)
+      n.triggerAttackRelease(0.03, 0)
       break
     }
   }
