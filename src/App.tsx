@@ -262,6 +262,7 @@ export default function App() {
             ))}
           </select>
         </label>
+        <span className="build">build {__APP_BUILD__}</span>
       </footer>
 
       {updateBundle && (

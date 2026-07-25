@@ -174,7 +174,13 @@ body {
 .bottom {
   padding: 14px 20px calc(18px + env(safe-area-inset-bottom));
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
+}
+.build {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 .kit {
   display: flex;
