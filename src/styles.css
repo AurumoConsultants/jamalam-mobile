@@ -148,6 +148,30 @@ body {
 .chip.openhat {
   color: var(--teal);
 }
+.chip.bass {
+  color: var(--pink);
+}
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 300px;
+}
+.mode-toggle button {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.mode-toggle button.on {
+  background: var(--blue);
+  color: #04121f;
+  border-color: var(--blue);
+}
 /* committed parts (layers) — a light, simple track list */
 .layers {
   width: 100%;

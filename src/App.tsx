@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { engine } from './audio/engine'
 import { KIT_NAMES } from './audio/kits'
 import { analyzeBeatbox, requantize, type Hit, type BeatboxResult } from './audio/beatbox'
+import { analyzeBassline, requantizeBass, type BasslineResult } from './audio/bassline'
 import { loadProfile } from './audio/profile'
 import Calibrate from './Calibrate'
 import type { DrumProfile } from './audio/beatbox'
@@ -10,6 +11,7 @@ import { markLaunchOk, checkForWebUpdate, applyUpdate } from './updater'
 import type { BundleInfo } from '@capgo/capacitor-updater'
 
 type Phase = 'idle' | 'recording' | 'analyzing' | 'ready'
+type Mode = 'drums' | 'bass'
 
 const DRUMS: Array<[Hit['type'], string]> = [
   ['kick', 'Kick'],
@@ -17,7 +19,7 @@ const DRUMS: Array<[Hit['type'], string]> = [
   ['hihat', 'Hihat'],
   ['openhat', 'Open Hat'],
 ]
-const LABELS: Record<string, string> = { kick: 'Kick', snare: 'Snare', hihat: 'Hi-hat', openhat: 'Open hat' }
+const LABELS: Record<string, string> = { kick: 'Kick', snare: 'Snare', hihat: 'Hi-hat', openhat: 'Open hat', bass: 'Bass' }
 
 // a committed part = its own drum track(s) that keep looping
 interface Layer {
@@ -42,8 +44,9 @@ export default function App() {
   const [playing, setPlaying] = useState(false)
   const [kit, setKit] = useState('808')
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<{ bpm: number; counts: Record<string, number>; total: number } | null>(null)
+  const [result, setResult] = useState<{ bpm: number; counts: Record<string, number>; total: number; kind: Mode } | null>(null)
   const [layers, setLayers] = useState<Layer[]>([])
+  const [mode, setMode] = useState<Mode>('drums')
   const [updateBundle, setUpdateBundle] = useState<BundleInfo | null>(null)
   const [applying, setApplying] = useState(false)
   const [checking, setChecking] = useState(false)
@@ -61,6 +64,7 @@ export default function App() {
   const previewIdsRef = useRef<string[]>([]) // the un-committed take's tracks
   const kitRef = useRef('808')
   const analysisRef = useRef<BeatboxResult | null>(null)
+  const bassRef = useRef<BasslineResult | null>(null)
   const peakRef = useRef(0)
   const sessionBpmRef = useRef<number | null>(null) // locked once the first part is kept
   const sessionBarsRef = useRef<number | null>(null)
@@ -179,6 +183,25 @@ export default function App() {
         return
       }
 
+      if (mode === 'bass') {
+        const locked = sessionBpmRef.current != null
+        const analysis = analyzeBassline(
+          audio,
+          locked ? { bpm: sessionBpmRef.current as number, bars: sessionBarsRef.current as number } : {},
+        )
+        if (!analysis.notes.length) {
+          setError('No pitch detected — hum or sing a clear bassline, sustained and close to the mic.')
+          setPhase('idle')
+          return
+        }
+        bassRef.current = analysis
+        const built = await buildBass(analysis)
+        setResult({ bpm: built.bpm, counts: { bass: built.count }, total: built.count, kind: 'bass' })
+        setPlaying(true)
+        setPhase('ready')
+        return
+      }
+
       const analysis = analyzeBeatbox(audio, loadProfile())
       if (!analysis.hits.length) {
         setError('No hits detected — beatbox a bit louder and closer to the mic.')
@@ -189,7 +212,7 @@ export default function App() {
       const built = await buildPreview(analysis)
       const counts: Record<string, number> = {}
       for (const h of built.hits) counts[h.type] = (counts[h.type] || 0) + 1
-      setResult({ bpm: built.bpm, counts, total: built.hits.length })
+      setResult({ bpm: built.bpm, counts, total: built.hits.length, kind: 'drums' })
       setPlaying(true)
       setPhase('ready')
     } catch (e: any) {
@@ -233,19 +256,47 @@ export default function App() {
     return { bpm, bars, hits }
   }
 
+  // Build the current (un-committed) bass take from a hummed/sung line.
+  async function buildBass(a: BasslineResult): Promise<{ bpm: number; count: number }> {
+    await engine.ensureStarted()
+    previewIdsRef.current.forEach((id) => engine.removeTrack(id))
+    previewIdsRef.current = []
+    const locked = sessionBpmRef.current != null
+    const bpm = locked ? (sessionBpmRef.current as number) : a.bpm
+    const bars = locked ? (sessionBarsRef.current as number) : a.bars
+    const notes = locked ? requantizeBass(a.raw, bpm, bars).notes : a.notes
+    engine.setTempo(bpm)
+    const id = newId()
+    const track: Track = {
+      id,
+      name: 'Bass',
+      instrument: 'bass',
+      volume: -6,
+      muted: false,
+      notes: notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity })),
+    }
+    engine.addOrUpdateTrack(track)
+    previewIdsRef.current = [id]
+    engine.setLoopBars(bars)
+    await engine.play()
+    return { bpm, count: notes.length }
+  }
+
   // Commit the current take as its own looping track (part).
   function keepAsTrack() {
-    if (!previewIdsRef.current.length || !analysisRef.current) return
+    if (!previewIdsRef.current.length || !result) return
     if (sessionBpmRef.current == null) {
-      sessionBpmRef.current = result?.bpm ?? analysisRef.current.bpm
-      sessionBarsRef.current = analysisRef.current.bars
+      const src = analysisRef.current ?? bassRef.current
+      sessionBpmRef.current = result.bpm
+      sessionBarsRef.current = src ? src.bars : 1
     }
-    const types = result ? Object.keys(result.counts) : []
+    const types = Object.keys(result.counts)
     const name = types.map((t) => LABELS[t] || t).join(' + ') || 'Part'
     const layer: Layer = { id: `L${Date.now().toString(36)}`, name, trackIds: previewIdsRef.current.slice(), muted: false }
     setLayers((ls) => [...ls, layer])
     previewIdsRef.current = [] // now committed — the next take won't remove it
     analysisRef.current = null
+    bassRef.current = null
     setResult(null)
     setPhase('idle')
   }
@@ -255,6 +306,7 @@ export default function App() {
     previewIdsRef.current.forEach((id) => engine.removeTrack(id))
     previewIdsRef.current = []
     analysisRef.current = null
+    bassRef.current = null
     setResult(null)
     setError(null)
     setPhase('idle')
@@ -312,7 +364,7 @@ export default function App() {
     const built = await buildPreview(next)
     const counts: Record<string, number> = {}
     for (const h of built.hits) counts[h.type] = (counts[h.type] || 0) + 1
-    setResult({ bpm: built.bpm, counts, total: built.hits.length })
+    setResult({ bpm: built.bpm, counts, total: built.hits.length, kind: 'drums' })
     setPlaying(true)
   }
 
@@ -330,14 +382,22 @@ export default function App() {
   const locked = sessionBpmRef.current != null
 
   const hint = recording
-    ? 'Listening… beatbox your part'
+    ? mode === 'bass'
+      ? 'Listening… hum your bassline'
+      : 'Listening… beatbox your part'
     : analyzing
-      ? 'Finding the hits…'
+      ? mode === 'bass'
+        ? 'Tracking the pitch…'
+        : 'Finding the hits…'
       : result
         ? 'Nice — keep it as a track, or delete and retry.'
-        : hasLayers
-          ? 'Loop is playing — beatbox another part to stack it on top.'
-          : 'Tap and beatbox — kick, snare, hats. Jamalam turns it into drums.'
+        : mode === 'bass'
+          ? hasLayers
+            ? 'Loop is playing — hum a bassline to add a bass track.'
+            : 'Hum or sing a bassline — Jamalam turns your voice into bass.'
+          : hasLayers
+            ? 'Loop is playing — beatbox another part to stack it on top.'
+            : 'Tap and beatbox — kick, snare, hats. Jamalam turns it into drums.'
 
   return (
     <div className="screen">
@@ -366,6 +426,17 @@ export default function App() {
 
         <p className="hint">{hint}</p>
 
+        {!recording && !analyzing && (
+          <div className="mode-toggle">
+            <button className={mode === 'drums' ? 'on' : ''} onClick={() => setMode('drums')}>
+              🥁 Drums
+            </button>
+            <button className={mode === 'bass' ? 'on' : ''} onClick={() => setMode('bass')}>
+              🎸 Bass
+            </button>
+          </div>
+        )}
+
         <button
           className={`orb ${recording ? 'rec' : ''} ${analyzing ? 'busy' : ''}`}
           style={{ transform: `scale(${recording ? meterScale : 1})` }}
@@ -374,20 +445,36 @@ export default function App() {
         >
           {recording ? '■' : analyzing ? '…' : '●'}
           <span className="orb-label">
-            {recording ? fmt(elapsed) : analyzing ? 'converting' : result ? 'again' : hasLayers ? 'add part' : 'beatbox'}
+            {recording
+              ? fmt(elapsed)
+              : analyzing
+                ? 'converting'
+                : result
+                  ? 'again'
+                  : hasLayers
+                    ? mode === 'bass'
+                      ? 'add bass'
+                      : 'add part'
+                    : mode === 'bass'
+                      ? 'hum bass'
+                      : 'beatbox'}
           </span>
         </button>
 
         {result && phase === 'ready' && (
           <div className="result">
             <div className="counts">
-              {DRUMS.filter(([t]) => result.counts[t]).map(([t, n]) => (
-                <span key={t} className={`chip ${t}`}>
-                  {result.counts[t]} {n}
-                </span>
-              ))}
+              {result.kind === 'bass' ? (
+                <span className="chip bass">🎸 {result.total} bass notes</span>
+              ) : (
+                DRUMS.filter(([t]) => result.counts[t]).map(([t, n]) => (
+                  <span key={t} className={`chip ${t}`}>
+                    {result.counts[t]} {n}
+                  </span>
+                ))
+              )}
             </div>
-            {!locked && (
+            {!locked && result.kind !== 'bass' && (
               <div className="tempo">
                 <button className="tempo-btn" onClick={() => adjustTempo(0.5)} title="Half tempo">
                   ½×
